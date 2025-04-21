@@ -1,4 +1,7 @@
 /* CURRENTLY UNTESTED
+ * 
+ *Flawed theory behind code, do not use. Requires much more complex use of a 9-Axis IMU for heading estimation from which purely vertical acceleration can be found.
+ *
  * Rocket Altitude Logger with Kalman Filter
  * For Teensy 4.1 with SparkFun H3LIS331DL and Adafruit BMP390
  * 
