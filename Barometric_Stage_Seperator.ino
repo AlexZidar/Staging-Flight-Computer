@@ -11,10 +11,16 @@ const int SD_CS_PIN = BUILTIN_SDCARD;  // Teensy 4.1 has built-in SD card
 
 // Configuration parameters
 const float LAUNCH_THRESHOLD = 4.0;     // g-force threshold for launch detection (adjust as needed)
-const float DEPLOYMENT_ALTITUDE = 381.0; // meters (adjust as needed) -- 381 meters for seperation for test flight
-const int BMP_WARMUP_READINGS = 5;      // Number of initial readings to discard -- I found that the first few barometer readings are much lower than typical, so we must remove them as to not destroy the average
-const int LOG_INTERVAL_MS = 100;        // Log data every 100ms
+const float DEPLOYMENT_ALTITUDE = 381.0; // meters (adjust as needed)
+const int BMP_WARMUP_READINGS = 5;      // Number of initial readings to discard
+const int LOG_INTERVAL_MS = 20;         // Log data every 20ms (50Hz)
 const int SERIAL_PRINT_INTERVAL = 1000; // Print debug info every 1000ms
+
+// Servo movement parameters
+const int SERVO_START_POS = 0;         // Initial servo position (degrees)
+const int SERVO_DEPLOYED_POS = 180;    // Fully deployed position (degrees)
+const int SERVO_STEP_DELAY_MS = .5;     // Delay between each degree of movement (ms)
+const int SERVO_STEP_SIZE = 3;         // Increment size for servo movement (degrees)
 
 // Global variables
 Adafruit_MPU6050 mpu;
@@ -25,8 +31,11 @@ File dataFile;
 float baselineAltitude = 0;
 bool launchDetected = false;
 bool servoDeployed = false;
+bool servoDeploymentInProgress = false;
+int currentServoPos = SERVO_START_POS;
 unsigned long lastLogTime = 0;
 unsigned long lastSerialPrintTime = 0;
+unsigned long lastServoMoveTime = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -54,11 +63,11 @@ void setup() {
     while (1) yield();
   }
   
-  // Configure BMP390
-  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
-  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
-  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
-  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+  // Configure BMP390 for maximum polling rate with moderate filtering
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_4X); // Moderate oversampling for balanced readings
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);    // Moderate oversampling for balanced readings
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);       // Medium filter coefficient for smoother readings
+  bmp.setOutputDataRate(BMP3_ODR_200_HZ);               // Maximum output data rate (200Hz)
   
   // Initialize SD card
   Serial.println("Initializing SD card...");
@@ -69,7 +78,8 @@ void setup() {
   
   // Initialize servo
   deploymentServo.attach(SERVO_PIN);
-  deploymentServo.write(0);  // Initial position
+  deploymentServo.write(SERVO_START_POS);  // Initial position
+  currentServoPos = SERVO_START_POS;
   
   // Create new log file with incremental name
   char filename[16];
@@ -81,7 +91,7 @@ void setup() {
   
   dataFile = SD.open(filename, FILE_WRITE);
   if (dataFile) {
-    dataFile.println("Time(ms),AccelMag(g),Pressure(Pa),Altitude(m),LaunchDetected,ServoDeployed");
+    dataFile.println("Time(ms),AccelMag(g),Pressure(Pa),Altitude(m),LaunchDetected,ServoDeployed,ServoPosition");
     dataFile.flush();
     Serial.print("Logging to: ");
     Serial.println(filename);
@@ -109,7 +119,7 @@ void loop() {
                               a.acceleration.y*a.acceleration.y + 
                               a.acceleration.z*a.acceleration.z) / 9.8; // Convert m/s² to g
   
-  // Read and calculate altitude
+  // Read and calculate altitude (optimized for speed)
   float pressure = 0;
   float altitude = 0;
   
@@ -117,7 +127,10 @@ void loop() {
     pressure = bmp.pressure;
     altitude = bmp.readAltitude(1013.25) - baselineAltitude; // Using the library's altitude calculation
   } else {
-    Serial.println("BMP390 reading failed!");
+    // Only print error message occasionally to avoid cluttering serial output
+    if (currentTime - lastSerialPrintTime >= SERIAL_PRINT_INTERVAL) {
+      Serial.println("BMP390 reading failed!");
+    }
   }
   
   // Launch detection
@@ -134,16 +147,34 @@ void loop() {
     logData(currentTime, accelMagnitude, pressure, altitude);
   }
   
-  // Servo deployment logic
-  if (launchDetected && !servoDeployed && altitude >= DEPLOYMENT_ALTITUDE) {
-    deployServo();
-    servoDeployed = true;
+  // Servo deployment logic - based only on altitude threshold
+  if (!servoDeployed && !servoDeploymentInProgress && altitude >= DEPLOYMENT_ALTITUDE) {
+    // Start servo deployment
+    servoDeploymentInProgress = true;
     Serial.print("Deployment triggered at altitude: ");
     Serial.print(altitude);
     Serial.println("m");
     
-    // Log the deployment event immediately
+    // Log the deployment trigger event immediately
     logData(currentTime, accelMagnitude, pressure, altitude);
+  }
+  
+  // Handle incremental servo movement if deployment is in progress
+  if (servoDeploymentInProgress && currentTime - lastServoMoveTime >= SERVO_STEP_DELAY_MS) {
+    if (currentServoPos < SERVO_DEPLOYED_POS) {
+      // Move servo one step towards deployed position
+      currentServoPos += SERVO_STEP_SIZE;
+      if (currentServoPos > SERVO_DEPLOYED_POS) {
+        currentServoPos = SERVO_DEPLOYED_POS; // Prevent overshooting
+      }
+      deploymentServo.write(currentServoPos);
+      lastServoMoveTime = currentTime;
+    } else {
+      // Servo has reached final position
+      servoDeploymentInProgress = false;
+      servoDeployed = true;
+      Serial.println("Servo fully deployed!");
+    }
   }
   
   // Log data at specified interval
@@ -165,7 +196,20 @@ void loop() {
     Serial.print("Pa, Launch: ");
     Serial.print(launchDetected ? "YES" : "NO");
     Serial.print(", Servo: ");
-    Serial.println(servoDeployed ? "DEPLOYED" : "WAITING");
+    if (servoDeployed) {
+      Serial.print("DEPLOYED");
+    } else if (servoDeploymentInProgress) {
+      Serial.print("DEPLOYING (");
+      Serial.print(currentServoPos);
+      Serial.print("°)");
+    } else {
+      Serial.print("WAITING (Alt: ");
+      Serial.print(altitude);
+      Serial.print("m vs ");
+      Serial.print(DEPLOYMENT_ALTITUDE);
+      Serial.print("m)");
+    }
+    Serial.println();
     
     lastSerialPrintTime = currentTime;
   }
@@ -203,11 +247,6 @@ void calibrateBMP() {
   }
 }
 
-void deployServo() {
-  // Move servo to deployment position
-  deploymentServo.write(180);  // Adjust angle as needed
-}
-
 void logData(unsigned long timestamp, float accelMagnitude, float pressure, float altitude) {
   if (dataFile) {
     dataFile.print(timestamp);
@@ -220,7 +259,9 @@ void logData(unsigned long timestamp, float accelMagnitude, float pressure, floa
     dataFile.print(",");
     dataFile.print(launchDetected ? "1" : "0");
     dataFile.print(",");
-    dataFile.println(servoDeployed ? "1" : "0");
+    dataFile.print(servoDeployed ? "1" : "0");
+    dataFile.print(",");
+    dataFile.println(currentServoPos);
     dataFile.flush();
   }
 }
