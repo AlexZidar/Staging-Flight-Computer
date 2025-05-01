@@ -10,9 +10,9 @@ const int SERVO_PIN = 33;              // Servo connected to pin 33
 const int SD_CS_PIN = BUILTIN_SDCARD;  // Teensy 4.1 has built-in SD card
 
 // Configuration parameters
-const float LAUNCH_THRESHOLD = 2.0;     // g-force threshold for launch detection (adjust as needed)
-const float DEPLOYMENT_ALTITUDE = 100.0; // meters (adjust as needed)
-const int BMP_WARMUP_READINGS = 5;      // Number of initial readings to discard
+const float LAUNCH_THRESHOLD = 4.0;     // g-force threshold for launch detection (adjust as needed)
+const float DEPLOYMENT_ALTITUDE = 381.0; // meters (adjust as needed) -- 381 meters for seperation for test flight
+const int BMP_WARMUP_READINGS = 5;      // Number of initial readings to discard -- I found that the first few barometer readings are much lower than typical, so we must remove them as to not destroy the average
 const int LOG_INTERVAL_MS = 100;        // Log data every 100ms
 const int SERIAL_PRINT_INTERVAL = 1000; // Print debug info every 1000ms
 
